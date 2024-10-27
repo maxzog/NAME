@@ -56,8 +56,6 @@ module spectral
          plan=fftw_plan_dft_1d(rank0, in, out, FFTW_FORWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, in, out)
-         ! Normalize
-         out = out/rank0
       end subroutine FFT_1D
 
       ! Subroutine that computes the one-dimensional Fourier transform
@@ -71,6 +69,8 @@ module spectral
          plan=fftw_plan_dft_1d(rank0, out, in, FFTW_BACKWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, out, in)
+         ! Normalize
+         out = out/rank0
       end subroutine iFFT_1D
 
       subroutine ddx_1D(in, wv, rank0)
@@ -117,8 +117,6 @@ module spectral
          plan=fftw_plan_dft_2d(rank1, rank0, in, out, FFTW_FORWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, in, out)
-         ! Normalize
-         out = out/(rank0*rank1)
       end subroutine FFT_2D
 
       ! Subroutine that computes the two-dimensional Fourier transform
@@ -132,6 +130,8 @@ module spectral
          plan=fftw_plan_dft_2d(rank1, rank0, out, in, FFTW_BACKWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, out, in)
+         ! Normalize
+         out = out/(rank0*rank1)
       end subroutine iFFT_2D
 
       subroutine initialize_2D(in, w1v, w2v, rank0, rank1)
@@ -170,8 +170,6 @@ module spectral
          plan=fftw_plan_dft_3d(rank2, rank1, rank0, in, out, FFTW_FORWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, in, out)
-         ! Normalize
-         out = out/(rank0*rank1*rank2)
       end subroutine FFT_3D
 
       ! Subroutine that computes the three-dimensional Fourier transform
@@ -185,6 +183,8 @@ module spectral
          plan=fftw_plan_dft_3d(rank2, rank1, rank0, out, in, FFTW_BACKWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, out, in)
+         ! Normalize
+         out = out/(rank0*rank1*rank2)
       end subroutine iFFT_3D
 
       subroutine initialize_3D(in, w1v, w2v, w3v, rank0, rank1, rank2)
@@ -217,7 +217,7 @@ module spectral
       end subroutine initialize_3D
 
       ! Routine to write complex array (1D of size N) to text file
-      subroutine write_complex_array(arr, rank0, filename)
+      subroutine write_complex_array_1D(arr, rank0, filename)
          implicit none
          integer(C_INT), intent(in) :: rank0            
          double complex, dimension(rank0), intent(in) :: arr 
@@ -236,7 +236,7 @@ module spectral
          end do
       
          close(unit)
-      end subroutine write_complex_array
+      end subroutine write_complex_array_1D
 
       ! Routine to write complex array (2D of size rank0 x rank1) to text file
       subroutine write_complex_array_2D(arr, rank0, rank1, filename)
