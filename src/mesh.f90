@@ -12,8 +12,6 @@ module grid_class
 
       real(8), dimension(:), allocatable :: xv,yv,zv
       integer, dimension(:), allocatable :: k1v,k2v,k3v
-
-      real(8), dimension(:,:,:), allocatable :: P, Q
       
       contains
 
@@ -82,25 +80,32 @@ module grid_class
       self%zmin=0.0; self%zmax=self%Lz
 
       allocate(self%xv(1:self%Nx+1)); self%xv=0.0
-      allocate(self%yv(1:self%Ny+1)); self%yv=0.0
-      allocate(self%zv(1:self%Nz+1)); self%zv=0.0
+      if (self%dim.gt.1) allocate(self%yv(1:self%Ny+1))
+      if (self%dim.gt.2) allocate(self%zv(1:self%Nz+1))
 
       allocate(self%k1v(1:self%Nx)); self%k1v=get_kv(self%Nx)
-      allocate(self%k2v(1:self%Ny)); self%k2v=get_kv(self%Ny)
-      allocate(self%k3v(1:self%Nz)); self%k3v=get_kv(self%Nz)
+      if (self%dim.gt.1) then
+         allocate(self%k2v(1:self%Ny))
+         self%k2v=get_kv(self%Ny)
+      end if
+      if (self%dim.gt.2) then
+         allocate(self%k3v(1:self%Nz))
+         self%k3v=get_kv(self%Nz)
+      end if
 
       do i=1,self%Nx+1
          self%xv(i)=(i-1)*self%dx
       end do
-      do i=1,self%Ny+1
-         self%yv(i)=(i-1)*self%dy
-      end do
-      do i=1,self%Nz+1
-         self%zv(i)=(i-1)*self%dz
-      end do
-
-      allocate(self%P(1:self%nx,1:self%ny,1:self%nz)); self%P=0.0
-      allocate(self%Q(1:self%nx,1:self%ny,1:self%nz)); self%Q=0.0
+      if (self%dim.gt.1) then
+         do i=1,self%Ny+1
+            self%yv(i)=(i-1)*self%dy
+         end do 
+      end if
+      if (self%dim.gt.2) then
+         do i=1,self%Nz+1
+            self%zv(i)=(i-1)*self%dz
+         end do
+      end if
    end function constructor
 
    ! subroutine solve_poisson(this,k1v,k2v,k3v)
@@ -157,7 +162,7 @@ module grid_class
      print *, "=============================="
  
      ! Print dimension info
-     print *, "Dimension (dim): ", this%dim
+     print *, "Dimension: ", this%dim
      print *, ""
  
      ! Print number of points and domain ranges
@@ -184,7 +189,7 @@ module grid_class
      ! If grid points are allocated, print size of the arrays
      if (allocated(this%xv)) print *, "Grid points allocated in x-direction, size: ", size(this%xv)
      if (allocated(this%yv)) print *, "Grid points allocated in y-direction, size: ", size(this%yv)
-     if (this%dim == 3 .and. allocated(this%zv)) print *, "Grid points allocated in z-direction, size: ", size(this%zv)
+     if (allocated(this%zv)) print *, "Grid points allocated in z-direction, size: ", size(this%zv)
  
      ! Print footer
      print *, "=============================="
