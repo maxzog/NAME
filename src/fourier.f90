@@ -176,6 +176,8 @@ module spectral
          call fftw_execute_dft(plan, in, out)
          ! Normalize
          out = out/(rank0*rank1*rank2)
+         ! Cleanup
+         call fftw_destroy_plan(plan)
       end subroutine FFT_3D
 
       ! Subroutine that computes the three-dimensional Fourier transform
@@ -189,6 +191,8 @@ module spectral
          plan=fftw_plan_dft_3d(rank2, rank1, rank0, out, in, FFTW_BACKWARD, FFTW_ESTIMATE)
          ! Execute
          call fftw_execute_dft(plan, out, in)
+         ! Cleanup
+         call fftw_destroy_plan(plan)
       end subroutine iFFT_3D
 
       subroutine initialize_3D(in, w1v, w2v, w3v, rank0, rank1, rank2)
