@@ -81,13 +81,9 @@ module spectral
             end do
          end do
 
-         out=0.5d0*out
-
-         ! Normalize
+         ! Create axis (for plotting) 
          do i=1,nbins
             axis(i)=dk*(i-1)
-            ! if (counts(i).eq.0) cycle
-            ! out(i)=out(i)/counts(i)
          end do
 
          deallocate(counts)

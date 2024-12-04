@@ -44,7 +44,9 @@ program hw5
 
    ! Initialize domain
    mesh=grid(Nx=N,Ny=N,Nz=N,Lx=2*PI,Ly=2*PI,Lz=2*PI)
-   ! call mesh%print
+   mesh%k1v=get_kv(mesh%Nx)
+   mesh%k2v=get_kv(mesh%Ny)
+   mesh%k3v=get_kv(mesh%Nz)
 
    state=problem_constructor(mesh=mesh, scheme=RK4, alias=alias, visc=visc)
 
@@ -55,10 +57,10 @@ program hw5
       state%t=0.0
       state%dt=0.001
       state%step=0
-      state%stepf=99999999
+      state%stepf= 50 !99999999
    end block init_timer
 
-   k0=4.0d0
+   k0=5.0d0
    u0=1.0d0
 
    call state%initialize_hit(mesh,k0,u0)

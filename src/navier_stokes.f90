@@ -73,7 +73,7 @@ module navierstokes_class
          self%visc=0.0
       end if
 
-      call random_init(.false.,.false.)
+      call random_init(.true.,.true.)
    end function problem_constructor
 
    subroutine advance(this, mesh)
@@ -187,8 +187,8 @@ module navierstokes_class
          call this%transform_vel(mesh, FORWARD)
          ! Compute pressure in spectral space
          call this%compute_phat(mesh)
-
-         
+ 
+         !$omp parallel do private(i, j, k, kmag)
          do k=1,mesh%Nz
             do j=1,mesh%Ny
                do i=1,mesh%Nx
@@ -209,6 +209,7 @@ module navierstokes_class
                end do
             end do
          end do
+         !$omp end parallel do
       end subroutine get_rhs_ns
    end subroutine get_rhs
 
@@ -221,6 +222,7 @@ module navierstokes_class
       real(8) :: kmag
 
       this%P=0.0
+      !$omp parallel do private(i, j, k, kmag)
       do k=1,mesh%nz
          do j=1,mesh%ny
             do i=1,mesh%nx
@@ -236,6 +238,7 @@ module navierstokes_class
             end do
          end do
       end do
+      !$omp end parallel do
    end subroutine compute_phat
 
    !> Compute stress tensor
@@ -246,6 +249,7 @@ module navierstokes_class
       integer :: i,j,k
 
       ! Compute non-linear term in physical space
+      !$omp parallel do private(i, j, k)
       do k=1,mesh%Nz
          do j=1,mesh%Ny
             do i=1,mesh%Nx
@@ -259,95 +263,84 @@ module navierstokes_class
             end do   
          end do   
       end do   
+      !$omp end parallel do
    end subroutine compute_U2
 
-   !> Compute stress tensor
+   !> Transform U2 with padding to prevent aliasing
    subroutine pad_and_transform_U2(this, mesh)
       use spectral
       implicit none
-      class (problem), intent(inout) :: this
-      class (grid), intent(in) :: mesh
+      class(problem), intent(inout) :: this
+      class(grid), intent(in) :: mesh
       double complex, dimension(:,:,:,:), allocatable :: U2pad
-      double complex, dimension(:,:,:), allocatable   :: temp_arr
-      integer :: i,j,k,ishift,jshift,kshift,npad
-      logical :: midx, midy, midz
-
-      allocate(U2pad(6,1:2*mesh%nx,1:2*mesh%ny,1:2*mesh%nz)); U2pad=cmplx(0.0d0,0.0d0)
-      allocate(temp_arr(1:2*mesh%nx,1:2*mesh%ny,1:2*mesh%nz)); temp_arr=cmplx(0.0d0,0.0d0)
-
-      do k=1,2*mesh%Nz
-         do j=1,2*mesh%Ny
-            do i=1,2*mesh%Nx
-               ! Reset index shifting
-               ishift=0
-               jshift=0
-               kshift=0
-               ! Check if we're in the middle of the cube 
-               midx = i > 0.5*mesh%nx .and. i < 1.5*mesh%nx
-               midy = j > 0.5*mesh%ny .and. j < 1.5*mesh%ny
-               midz = k > 0.5*mesh%nz .and. k < 1.5*mesh%nz
-               ! If if the index is in the middle then shift it
-               if (i > 1.5*mesh%nx) ishift=1
-               if (j > 1.5*mesh%nx) jshift=1
-               if (k > 1.5*mesh%nx) kshift=1
-               ! If in the middle fill with zeros
-               if (midx.or.midy.or.midz) then
-                  U2pad(:,i,j,k) = cmplx(0.0d0, 0.0d0)
-               else ! Otherwise fill with U2
-                  U2pad(:,i,j,k) = this%U2(:,i-ishift*mesh%nx,j-jshift*mesh%ny,k-kshift*mesh%nz)
-               end if
-            end do
-         end do
+      double complex, dimension(:,:,:), allocatable   :: tempArr
+      integer :: i, j, k, npad
+      logical, allocatable :: isMiddleX(:), isMiddleY(:), isMiddleZ(:)
+      integer, allocatable :: shiftX(:), shiftY(:), shiftZ(:)
+  
+      allocate(U2pad(6, 1:2*mesh%nx, 1:2*mesh%ny, 1:2*mesh%nz))
+      U2pad = cmplx(0.0d0, 0.0d0)
+  
+      allocate(tempArr(1:2*mesh%nx, 1:2*mesh%ny, 1:2*mesh%nz))
+      tempArr = cmplx(0.0d0, 0.0d0)
+  
+      allocate(shiftX(1:2*mesh%nx), shiftY(1:2*mesh%ny), shiftZ(1:2*mesh%nz))
+      allocate(isMiddleX(1:2*mesh%nx), isMiddleY(1:2*mesh%ny), isMiddleZ(1:2*mesh%nz))
+  
+      ! Precompute shifts and middle-region masks
+      do i = 1, 2*mesh%nx
+          shiftX(i) = merge(1, 0, i > 1.5*mesh%nx)
+          isMiddleX(i) = i > 0.5*mesh%nx .and. i < 1.5*mesh%nx
       end do
-
-      npad=2*mesh%nx
-
+  
+      do j = 1, 2*mesh%ny
+          shiftY(j) = merge(1, 0, j > 1.5*mesh%ny)
+          isMiddleY(j) = j > 0.5*mesh%ny .and. j < 1.5*mesh%ny
+      end do
+  
+      do k = 1, 2*mesh%nz
+          shiftZ(k) = merge(1, 0, k > 1.5*mesh%nz)
+          isMiddleZ(k) = k > 0.5*mesh%nz .and. k < 1.5*mesh%nz
+      end do
+  
+      ! Fill U2pad
+      !$omp parallel do private(i, j, k)
+      do k = 1, 2*mesh%nz
+          do j = 1, 2*mesh%ny
+              do i = 1, 2*mesh%nx
+                  if (.not.(isMiddleX(i) .or. isMiddleY(j) .or. isMiddleZ(k))) then
+                      U2pad(:, i, j, k) = this%U2(:, i - shiftX(i)*mesh%nx, j - shiftY(j)*mesh%ny, k - shiftZ(k)*mesh%nz)
+                  end if
+              end do
+          end do
+      end do
+      !$omp end parallel do
+  
+      npad = 2 * mesh%nx
+  
       ! Transform the padded U2 array
-      temp_arr=U2pad(1,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(1,:,:,:)=temp_arr
-      temp_arr=U2pad(2,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(2,:,:,:)=temp_arr
-      temp_arr=U2pad(3,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(3,:,:,:)=temp_arr
-      temp_arr=U2pad(4,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(4,:,:,:)=temp_arr
-      temp_arr=U2pad(5,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(5,:,:,:)=temp_arr
-      temp_arr=U2pad(6,:,:,:)
-      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
-      U2pad(6,:,:,:)=temp_arr
-
-      do k=1,2*mesh%Nz
-         do j=1,2*mesh%Ny
-            do i=1,2*mesh%Nx
-               ! Reset index shifting
-               ishift=0
-               jshift=0
-               kshift=0
-               ! Check if we're in the middle of the cube 
-               midx = i > 0.5*mesh%nx .and. i < 1.5*mesh%nx
-               midy = j > 0.5*mesh%ny .and. j < 1.5*mesh%ny
-               midz = k > 0.5*mesh%nz .and. k < 1.5*mesh%nz
-               ! If if the index is in the middle then shift it
-               if (i > 1.5*mesh%nx) ishift=1
-               if (j > 1.5*mesh%nx) jshift=1
-               if (k > 1.5*mesh%nx) kshift=1
-               ! If in the middle fill with zeros
-               if (.not.(midx.or.midy.or.midz)) then
-                  this%U2(:,i-ishift*mesh%nx,j-jshift*mesh%ny,k-kshift*mesh%nz)=U2pad(:,i,j,k)
-               end if
-            end do
-         end do
+      do i = 1, 6
+          tempArr = U2pad(i, :, :, :)
+          call FFT_3D(tempArr, tempArr, npad, npad, npad)
+          U2pad(i, :, :, :) = tempArr
       end do
-
-      deallocate(U2pad,temp_arr)
-   end subroutine pad_and_transform_U2
-
+  
+      ! Copy back transformed data
+      !$omp parallel do private(i, j, k)
+      do k = 1, 2*mesh%nz
+          do j = 1, 2*mesh%ny
+              do i = 1, 2*mesh%nx
+                  if (.not.(isMiddleX(i) .or. isMiddleY(j) .or. isMiddleZ(k))) then
+                      this%U2(:, i - shiftX(i)*mesh%nx, j - shiftY(j)*mesh%ny, k - shiftZ(k)*mesh%nz) = U2pad(:, i, j, k)
+                  end if
+              end do
+          end do
+      end do
+      !$omp end parallel do
+  
+      deallocate(U2pad, tempArr, shiftX, shiftY, shiftZ, isMiddleX, isMiddleY, isMiddleZ)
+  end subroutine pad_and_transform_U2
+  
    !> For convenience
    !> Performs three 3D transforms on the velocity field
    subroutine transform_vel(this, mesh, direction)
@@ -355,35 +348,35 @@ module navierstokes_class
       implicit none
       class (problem), intent(inout) :: this
       class (grid), intent(in) :: mesh
-      double complex, dimension(:,:,:), allocatable :: temp_arr
+      double complex, dimension(:,:,:), allocatable :: tempArr
       integer :: direction
 
-      allocate(temp_arr, MOLD=this%U(1,:,:,:))
+      allocate(tempArr, MOLD=this%U(1,:,:,:))
 
       select case(direction)
       case(FORWARD)
-         temp_arr=this%U(1,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(1,:,:,:)=temp_arr
-         temp_arr=this%U(2,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(2,:,:,:)=temp_arr
-         temp_arr=this%U(3,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(3,:,:,:)=temp_arr
+         tempArr=this%U(1,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(1,:,:,:)=tempArr
+         tempArr=this%U(2,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(2,:,:,:)=tempArr
+         tempArr=this%U(3,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(3,:,:,:)=tempArr
       case(BACKWARD)
-         temp_arr=this%U(1,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(1,:,:,:)=temp_arr
-         temp_arr=this%U(2,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(2,:,:,:)=temp_arr
-         temp_arr=this%U(3,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U(3,:,:,:)=temp_arr
+         tempArr=this%U(1,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(1,:,:,:)=tempArr
+         tempArr=this%U(2,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(2,:,:,:)=tempArr
+         tempArr=this%U(3,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U(3,:,:,:)=tempArr
       end select
 
-      deallocate(temp_arr)
+      deallocate(tempArr)
    end subroutine transform_vel
 
    !> For convenience
@@ -393,51 +386,51 @@ module navierstokes_class
       implicit none
       class (problem), intent(inout) :: this
       class (grid), intent(in) :: mesh
-      double complex, dimension(:,:,:), allocatable :: temp_arr
+      double complex, dimension(:,:,:), allocatable :: tempArr
       integer :: direction
 
-      allocate(temp_arr, MOLD=this%U2(1,:,:,:))
+      allocate(tempArr, MOLD=this%U2(1,:,:,:))
       select case(direction)
       case(FORWARD)
-         temp_arr=this%U2(1,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(1,:,:,:)=temp_arr
-         temp_arr=this%U2(2,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(2,:,:,:)=temp_arr
-         temp_arr=this%U2(3,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(3,:,:,:)=temp_arr
-         temp_arr=this%U2(4,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(4,:,:,:)=temp_arr
-         temp_arr=this%U2(5,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(5,:,:,:)=temp_arr
-         temp_arr=this%U2(6,:,:,:)
-         call FFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(6,:,:,:)=temp_arr
+         tempArr=this%U2(1,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(1,:,:,:)=tempArr
+         tempArr=this%U2(2,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(2,:,:,:)=tempArr
+         tempArr=this%U2(3,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(3,:,:,:)=tempArr
+         tempArr=this%U2(4,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(4,:,:,:)=tempArr
+         tempArr=this%U2(5,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(5,:,:,:)=tempArr
+         tempArr=this%U2(6,:,:,:)
+         call FFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(6,:,:,:)=tempArr
       case(BACKWARD)
-         temp_arr=this%U2(1,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(1,:,:,:)=temp_arr
-         temp_arr=this%U2(2,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(2,:,:,:)=temp_arr
-         temp_arr=this%U2(3,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(3,:,:,:)=temp_arr
-         temp_arr=this%U2(4,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(4,:,:,:)=temp_arr
-         temp_arr=this%U2(5,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(5,:,:,:)=temp_arr
-         temp_arr=this%U2(6,:,:,:)
-         call iFFT_3D(temp_arr, temp_arr, mesh%nx, mesh%ny, mesh%nz)
-         this%U2(6,:,:,:)=temp_arr
+         tempArr=this%U2(1,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(1,:,:,:)=tempArr
+         tempArr=this%U2(2,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(2,:,:,:)=tempArr
+         tempArr=this%U2(3,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(3,:,:,:)=tempArr
+         tempArr=this%U2(4,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(4,:,:,:)=tempArr
+         tempArr=this%U2(5,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(5,:,:,:)=tempArr
+         tempArr=this%U2(6,:,:,:)
+         call iFFT_3D(tempArr, tempArr, mesh%nx, mesh%ny, mesh%nz)
+         this%U2(6,:,:,:)=tempArr
       end select
-      deallocate(temp_arr)
+      deallocate(tempArr)
    end subroutine transform_U2
 
    subroutine initialize_hit(this, mesh, k0, u0)
@@ -465,8 +458,8 @@ module navierstokes_class
          end do
       end do
 
-      do k=2,mesh%nz/2
-         do j=2,mesh%ny/2
+      do k=2,mesh%nz
+         do j=2,mesh%ny
             do i=2,mesh%nx/2
                ! Compute magnitude of wavenumber vector
                kmag = sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2 + mesh%k3v(k)**2, 8))
@@ -483,8 +476,8 @@ module navierstokes_class
                   this%U(1,i,j,k) = top/bot
                   this%U(1,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(top/bot)
                else
-                  this%U(1,i,j,k) = cmplx(0.0d0,0.0d0)
-                  this%U(1,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = cmplx(0.0d0,0.0d0) 
+                  this%U(1,i,j,k) = alpha !cmplx(0.0d0,0.0d0)
+                  this%U(1,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(alpha) !cmplx(0.0d0,0.0d0) 
                end if
       
                ! v (y) component
@@ -494,8 +487,8 @@ module navierstokes_class
                   this%U(2,i,j,k) = top/bot
                   this%U(2,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(top/bot)
                else
-                  this%U(2,i,j,k) = cmplx(0.0d0,0.0d0)
-                  this%U(2,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = cmplx(0.0d0,0.0d0)
+                  this%U(2,i,j,k) = beta !cmplx(0.0d0,0.0d0)
+                  this%U(2,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(beta) !cmplx(0.0d0,0.0d0)
                end if
       
                ! w (z) component
@@ -524,9 +517,11 @@ module navierstokes_class
       call random_number(theta2)
       call random_number(phi)
 
-      ! Scale angles to be in [0,2pi)
+      ! Scale angles to be in [0,2pi) or [-pi,pi)
       theta1=theta1*2.0*PI
       theta2=theta2*2.0*PI
+      theta1=(theta1*0.5 - 1.0)*2.0*PI
+      theta2=(theta2*0.5 - 1.0)*2.0*PI
       phi=phi*2.0*PI
 
       ! Compute coeffs
