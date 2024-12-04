@@ -1,4 +1,4 @@
-program hw4_q1
+program hw5
    use spectral
    use grid_class
    use navierstokes_class
@@ -11,19 +11,14 @@ program hw4_q1
    ! Command-line arguments
    integer :: iarg
    character(len=20) :: arg
-   real(8) :: visc
+   real(8) :: visc, k0, u0
 
-   ! Grid type
+   ! Type inits for grid and state 
    type(grid) :: mesh
-
-   ! State type
    type(problem) :: state
 
-   ! Size
-   ! integer, parameter :: N=32
-   
-   ! State 
-   double complex, allocatable :: tempArray(:,:,:)
+   ! Energy spectrum
+   real(8), dimension(:), allocatable :: Ek,Ekv
 
    ! Defaults
    N = 32                  ! Default grid size
@@ -43,41 +38,42 @@ program hw4_q1
       end select
    end do
 
-   ! Print the inputs for confirmation
-   print *, 'Grid size N:', N
-   print *, 'Alias:', alias
-   print *, 'Visc:', visc
+   ! Prep spectrum and axis
+   allocate(Ek (1:N)); Ek=0.0d0
+   allocate(Ekv(1:N)); Ekv=0.0d0
 
    ! Initialize domain
    mesh=grid(Nx=N,Ny=N,Nz=N,Lx=2*PI,Ly=2*PI,Lz=2*PI)
-   call mesh%print
+   ! call mesh%print
 
    state=problem_constructor(mesh=mesh, scheme=RK4, alias=alias, visc=visc)
 
    init_timer: block
       real(8) :: dt_max
       ! Calculate the maximum allowable dt for stability
-      state%tf=0.5
+      state%tf=5.0
       state%t=0.0
-      state%dt=0.0001
+      state%dt=0.001
       state%step=0
       state%stepf=99999999
    end block init_timer
 
-   !> Init Taylor-Green vortex
-   init_problem: block
-      integer :: i,j,k
-      do k=1,mesh%nz
-         do j=1,mesh%ny
-            do i=1,mesh%nx
-               state%U(1,i,j,k)=-cos(mesh%xv(i))*sin(mesh%yv(j))
-               state%U(2,i,j,k)=sin(mesh%xv(i))*cos(mesh%yv(j))
-               state%U(3,i,j,k)=0.0d0
-               state%P(i,j,j)=-0.25d0*(cos(2*mesh%xv(i)) + cos(2*mesh%yv(j)))
-            end do
-         end do
-      end do
-   end block init_problem
+   k0=4.0d0
+   u0=1.0d0
+
+   call state%initialize_hit(mesh,k0,u0)
+
+   call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Uh_ic.txt")
+   call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Vh_ic.txt")
+   call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Wh_ic.txt")
+
+   call compute_radial_spectrum(state%U, mesh, Ek, Ekv)
+
+   call write_double_array(Ek, N, "./outs/Ek_ic.txt")
+   call write_double_array(Ekv, N, "./outs/Ekax_ic.txt")
+
+   ! Transform the initial condition
+   call state%transform_vel(mesh, BACKWARD)
 
    call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/U_ic.txt")
    call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/V_ic.txt")
@@ -86,24 +82,26 @@ program hw4_q1
    ! Transform the initial condition
    call state%transform_vel(mesh, FORWARD)
 
-   ! call write_complex_array_3D(state%U, mesh%nx, "./outs/state_ic.txt")
-
    ! Advance Fourier coeffs
    do while(.not.(state%sdone.or.state%tdone))
-      print *, "Step :: ", state%step
       call state%advance(mesh)
-      state%U(3,:,:,:)=0.0d0
       call state%adjust_time()
+      if (mod(state%step,10).eq.1) then
+         call compute_radial_spectrum(state%U, mesh, Ek, Ekv)
+         call state%transform_vel(mesh, BACKWARD)
+         call output(state, mesh)
+         call state%transform_vel(mesh, FORWARD)
+      end if
    end do
 
-   ! Transform solution back to physical space
+   ! Transform the initial condition
    call state%transform_vel(mesh, BACKWARD)
 
-   call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/U_001.txt")
-   call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/V_001.txt")
-   call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/W_001.txt")
+   call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/U_later.txt")
+   call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/V_later.txt")
+   call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/W_later.txt")
 
-   ! call output(state, mesh)
+   deallocate(Ek)
 
    contains
 
@@ -125,21 +123,22 @@ program hw4_q1
       write(n_dir, '(A)') "n" // trim(adjustl(n_str))
       write(visc_dir, '(A)') "nu" // trim(adjustl(visc_str)) 
    
-      ! Construct the filename based on alias setting
-      if (state%dealias) then
-         write(filename, '(A,A,A,A,A,I5.5,A)') "./", trim(n_dir), "/", trim(visc_dir), "/outs/state_rk4_", state%step, ".txt"
-      else
-         write(filename, '(A,A,A,A,A,I5.5,A)') "./", trim(n_dir), "/", trim(visc_dir), "/outs_no/state_rk4_", state%step, ".txt"
-      end if
-
-      call system("mkdir -p " // trim(n_dir) // "/" // trim(visc_dir) // "/outs")
-      call system("mkdir -p " // trim(n_dir) // "/" // trim(visc_dir) // "/outs_no")
-   
+      write(filename, '(A,I5.5,A)') "./outs/U_", state%step, ".txt"
       ! Write the complex array to the generated filename
-      call write_complex_array_1D(state%U, mesh%nx, filename)
+      call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, filename)
+      write(filename, '(A,I5.5,A)') "./outs/V_", state%step, ".txt"
+      ! Write the complex array to the generated filename
+      call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, filename)
+      write(filename, '(A,I5.5,A)') "./outs/W_", state%step, ".txt"
+      ! Write the complex array to the generated filename
+      call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, filename)
+
+      write(filename, '(A,I5.5,A)') "./outs/Ek_", state%step, ".txt"
+      call write_double_array(Ek, N, filename)
+      write(filename, '(A,I5.5,A)') "./outs/Ekax_", state%step, ".txt"
+      call write_double_array(Ekv, N, filename)
    
       ! Print the current time and step
       print *, "Time :: ", state%t, " Step :: ", state%step
    end subroutine output
-
-end program hw4_q1
+end program hw5

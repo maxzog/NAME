@@ -38,6 +38,7 @@ module navierstokes_class
       procedure, public :: transform_vel
       procedure, public :: transform_U2
       procedure, public :: compute_U2
+      procedure, public :: pad_and_transform_U2
       procedure, public :: compute_phat
       procedure, public :: adjust_time
       procedure, public :: initialize_hit
@@ -49,13 +50,12 @@ module navierstokes_class
 
    contains
 
-   function problem_constructor(mesh, scheme, alias, visc, c, CFL, dt, tf, t, step, stepf) result(self)
+   function problem_constructor(mesh, scheme, alias, visc) result(self)
       implicit none
       type(problem) :: self
       type(grid) :: mesh
       integer :: scheme
-      real(8), optional :: visc,c,CFL,dt,tf,t
-      integer, optional :: step,stepf
+      real(8), optional :: visc
       logical, optional :: alias
       
       allocate(self%P  (  1:mesh%nx,1:mesh%ny,1:mesh%nz)); self%P  =0.0
@@ -67,16 +67,13 @@ module navierstokes_class
 
       self%scheme=scheme
 
-      if (present(c)) then
-         self%c=c
-      else
-         self%c=0.0
-      end if
       if (present(visc)) then
          self%visc=visc
       else
          self%visc=0.0
       end if
+
+      call random_init(.false.,.false.)
    end function problem_constructor
 
    subroutine advance(this, mesh)
@@ -162,12 +159,7 @@ module navierstokes_class
       class(problem), intent(inout) :: this
       class(grid), intent(in) :: mesh
 
-      !> Call the subroutine based on eqn specified
-      if (this%dealias) then
-         ! call get_rhs_ns_a(this)
-      else
-         call get_rhs_ns(this)
-      end if
+      call get_rhs_ns(this)
 
       contains
       !> 3D Navier-Stokes RHS without dealiasing
@@ -180,15 +172,22 @@ module navierstokes_class
 
          ! Bring velocity to physical space
          call this%transform_vel(mesh, BACKWARD)
-         ! Compute non-linear term
-         call this%compute_U2(mesh)
+         if (.not.this%dealias) then
+            ! Compute non-linear term
+            call this%compute_U2(mesh)
+            ! Bring non-linear term to spectral space
+            call this%transform_U2(mesh, FORWARD)
+         else
+            ! Compute non-linear term
+            call this%compute_U2(mesh)
+            ! Pad and transform U2 
+            call this%pad_and_transform_U2(mesh)
+         end if
          ! Bring velocity back to spectral space
          call this%transform_vel(mesh, FORWARD)
-         ! Bring non-linear term to spectral space
-         call this%transform_U2(mesh, FORWARD)
-
          ! Compute pressure in spectral space
          call this%compute_phat(mesh)
+
          
          do k=1,mesh%Nz
             do j=1,mesh%Ny
@@ -204,14 +203,12 @@ module navierstokes_class
                   &                   -i_unit*mesh%k2v(j)*this%P(i,j,k)                                                                    &
                   &                   -this%visc*kmag**2*this%U(2,i,j,k)
                   ! RHS - z 
-                  this%RHS(3,i,j,k) = -i_unit*(mesh%k1v(i)*this%U2(1,i,j,k) + mesh%k2v(j)*this%U2(4,i,j,k) + mesh%k3v(k)*this%U2(6,i,j,k)) &
+                  this%RHS(3,i,j,k) = -i_unit*(mesh%k1v(i)*this%U2(6,i,j,k) + mesh%k2v(j)*this%U2(5,i,j,k) + mesh%k3v(k)*this%U2(3,i,j,k)) &
                   &                   -i_unit*mesh%k3v(k)*this%P(i,j,k)                                                                    &
                   &                   -this%visc*kmag**2*this%U(3,i,j,k)
-                  this%RHS(3,i,j,k) = 0.0d0
                end do
             end do
          end do
-
       end subroutine get_rhs_ns
    end subroutine get_rhs
 
@@ -263,6 +260,93 @@ module navierstokes_class
          end do   
       end do   
    end subroutine compute_U2
+
+   !> Compute stress tensor
+   subroutine pad_and_transform_U2(this, mesh)
+      use spectral
+      implicit none
+      class (problem), intent(inout) :: this
+      class (grid), intent(in) :: mesh
+      double complex, dimension(:,:,:,:), allocatable :: U2pad
+      double complex, dimension(:,:,:), allocatable   :: temp_arr
+      integer :: i,j,k,ishift,jshift,kshift,npad
+      logical :: midx, midy, midz
+
+      allocate(U2pad(6,1:2*mesh%nx,1:2*mesh%ny,1:2*mesh%nz)); U2pad=cmplx(0.0d0,0.0d0)
+      allocate(temp_arr(1:2*mesh%nx,1:2*mesh%ny,1:2*mesh%nz)); temp_arr=cmplx(0.0d0,0.0d0)
+
+      do k=1,2*mesh%Nz
+         do j=1,2*mesh%Ny
+            do i=1,2*mesh%Nx
+               ! Reset index shifting
+               ishift=0
+               jshift=0
+               kshift=0
+               ! Check if we're in the middle of the cube 
+               midx = i > 0.5*mesh%nx .and. i < 1.5*mesh%nx
+               midy = j > 0.5*mesh%ny .and. j < 1.5*mesh%ny
+               midz = k > 0.5*mesh%nz .and. k < 1.5*mesh%nz
+               ! If if the index is in the middle then shift it
+               if (i > 1.5*mesh%nx) ishift=1
+               if (j > 1.5*mesh%nx) jshift=1
+               if (k > 1.5*mesh%nx) kshift=1
+               ! If in the middle fill with zeros
+               if (midx.or.midy.or.midz) then
+                  U2pad(:,i,j,k) = cmplx(0.0d0, 0.0d0)
+               else ! Otherwise fill with U2
+                  U2pad(:,i,j,k) = this%U2(:,i-ishift*mesh%nx,j-jshift*mesh%ny,k-kshift*mesh%nz)
+               end if
+            end do
+         end do
+      end do
+
+      npad=2*mesh%nx
+
+      ! Transform the padded U2 array
+      temp_arr=U2pad(1,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(1,:,:,:)=temp_arr
+      temp_arr=U2pad(2,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(2,:,:,:)=temp_arr
+      temp_arr=U2pad(3,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(3,:,:,:)=temp_arr
+      temp_arr=U2pad(4,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(4,:,:,:)=temp_arr
+      temp_arr=U2pad(5,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(5,:,:,:)=temp_arr
+      temp_arr=U2pad(6,:,:,:)
+      call FFT_3D(temp_arr, temp_arr, npad, npad, npad) 
+      U2pad(6,:,:,:)=temp_arr
+
+      do k=1,2*mesh%Nz
+         do j=1,2*mesh%Ny
+            do i=1,2*mesh%Nx
+               ! Reset index shifting
+               ishift=0
+               jshift=0
+               kshift=0
+               ! Check if we're in the middle of the cube 
+               midx = i > 0.5*mesh%nx .and. i < 1.5*mesh%nx
+               midy = j > 0.5*mesh%ny .and. j < 1.5*mesh%ny
+               midz = k > 0.5*mesh%nz .and. k < 1.5*mesh%nz
+               ! If if the index is in the middle then shift it
+               if (i > 1.5*mesh%nx) ishift=1
+               if (j > 1.5*mesh%nx) jshift=1
+               if (k > 1.5*mesh%nx) kshift=1
+               ! If in the middle fill with zeros
+               if (.not.(midx.or.midy.or.midz)) then
+                  this%U2(:,i-ishift*mesh%nx,j-jshift*mesh%ny,k-kshift*mesh%nz)=U2pad(:,i,j,k)
+               end if
+            end do
+         end do
+      end do
+
+      deallocate(U2pad,temp_arr)
+   end subroutine pad_and_transform_U2
 
    !> For convenience
    !> Performs three 3D transforms on the velocity field
@@ -356,46 +440,106 @@ module navierstokes_class
       deallocate(temp_arr)
    end subroutine transform_U2
 
-   subroutine initialize_hit(this, mesh)
+   subroutine initialize_hit(this, mesh, k0, u0)
       implicit none
       class (problem), intent(inout) :: this
       class (grid), intent(in) :: mesh
+      real(8), intent(in) :: k0,u0
       double complex :: top, bot, alpha, beta
       integer :: i,j,k
+      integer, dimension(3) :: kv
       real(8) :: kmag
       
-      this%U=0.0d0
-      do k=1,mesh%Nz/2
-         do j=1,mesh%Ny/2
-            do i=1,mesh%Nx/2
-               kmag=sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2 + mesh%k3v(k)**2, 8))
-               if (kmag.lt.epsilon(1.0d0)) cycle
+      this%U=cmplx(0.0d0,0.0d0)
+
+      ! Set zeroth mode and oddball values
+      this%U(:,1,1,1)=cmplx(0.0d0,0.0d0)
+      do k=1,mesh%Nz
+         do j=1,mesh%Ny
+            do i=1,mesh%nx
+               if (i.eq.mesh%Nx/2+1 .or. j.eq.mesh%Ny/2+1 .or. k.eq.mesh%Nz/2+1) then
+                  this%U(:,i,j,k) = cmplx(0.0d0, 0.0d0)  ! Ensure these are real
+                  cycle
+               end if
+            end do
+         end do
+      end do
+
+      do k=2,mesh%nz/2
+         do j=2,mesh%ny/2
+            do i=2,mesh%nx/2
+               ! Compute magnitude of wavenumber vector
+               kmag = sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2 + mesh%k3v(k)**2, 8))
+
+               if (kmag.lt.10.0d0*epsilon(1.0d0)) cycle
+      
+               ! Get alpha and beta coefficients
+               call get_alpha_beta(kmag, k0, u0, alpha, beta)
+
                ! u (x) component
-               top = alpha*kmag*mesh%k2v(j) + beta*mesh%k1v(i)*mesh%k3v(k)
-               bot = kmag*sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8))
-               this%U(1,mesh%nx-(i-2),mesh%ny-(j-2),mesh%nz-(k-2)) = top/bot
-               this%U(1,i,j,k) = conjg(top/bot)
+               top = alpha * kmag * mesh%k2v(j) + beta * mesh%k1v(i) * mesh%k3v(k)
+               bot = kmag * sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8))
+               if (abs(bot) > 10.0d0*epsilon(1.0d0)) then
+                  this%U(1,i,j,k) = top/bot
+                  this%U(1,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(top/bot)
+               else
+                  this%U(1,i,j,k) = cmplx(0.0d0,0.0d0)
+                  this%U(1,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = cmplx(0.0d0,0.0d0) 
+               end if
+      
                ! v (y) component
-               top = beta*mesh%k2v(j)*mesh%k3v(k) - alpha*kmag*mesh%k1v(i) 
-               bot = kmag*sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8))
-               this%U(2,mesh%nx-(i-2),mesh%ny-(j-2),mesh%nz-(k-2)) = top/bot
-               this%U(2,i,j,k) = conjg(top/bot)
+               top = beta * mesh%k2v(j) * mesh%k3v(k) - alpha * kmag * mesh%k1v(i)
+               bot = kmag * sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8))
+               if (abs(bot).gt.10.0d0*epsilon(1.0d0)) then
+                  this%U(2,i,j,k) = top/bot
+                  this%U(2,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(top/bot)
+               else
+                  this%U(2,i,j,k) = cmplx(0.0d0,0.0d0)
+                  this%U(2,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = cmplx(0.0d0,0.0d0)
+               end if
+      
                ! w (z) component
-               top = beta*sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8)) 
-               bot = kmag 
-               this%U(3,mesh%nx-(i-2),mesh%ny-(j-2),mesh%nz-(k-2)) = top/bot
-               this%U(3,i,j,k) = conjg(top/bot)
+               top = -beta * sqrt(real(mesh%k1v(i)**2 + mesh%k2v(j)**2, 8))
+               bot = kmag
+               if (abs(bot).gt.10.0d0*epsilon(1.0d0)) then
+                  this%U(3,i,j,k) = top/bot
+                  this%U(3,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = conjg(top/bot)
+               else
+                  this%U(3,i,j,k) = cmplx(0.0d0,0.0d0)
+                  this%U(3,mesh%nx-i+2,mesh%ny-j+2,mesh%nz-k+2) = cmplx(0.0d0,0.0d0)
+               end if
             end do
          end do
       end do
    end subroutine initialize_hit
 
-   function get_alpha_beta(kmag) result(alpha, beta)
-      real(8) :: kmag
-      double complex :: alpha, beta
-      alpha=sqrt(spectrum(kmag) / (4*PI*kmag**2))*exp(i_unit(theta1))*cos(phi)
-      alpha=sqrt(spectrum(kmag) / (4*PI*kmag**2))*exp(i_unit(theta2))*sin(phi)
-   end function get_alpha
+   subroutine get_alpha_beta(kmag, k0, u0, alpha, beta)
+      use spectral
+      real(8), intent(in) :: kmag, k0, u0
+      double complex, intent(inout) :: alpha, beta
+      real(8) :: theta1, theta2, phi
+
+      ! Get random angles
+      call random_number(theta1)
+      call random_number(theta2)
+      call random_number(phi)
+
+      ! Scale angles to be in [0,2pi)
+      theta1=theta1*2.0*PI
+      theta2=theta2*2.0*PI
+      phi=phi*2.0*PI
+
+      ! Compute coeffs
+      alpha=sqrt(spectrum(kmag, k0, u0) / (4*PI*kmag**2))*exp(i_unit*theta1)*cos(phi)
+      beta=sqrt(spectrum(kmag, k0, u0) / (4*PI*kmag**2))*exp(i_unit*theta2)*sin(phi)
+   end subroutine get_alpha_beta
+
+   ! Prescribed energy spectrum for initial condition
+   function spectrum(kmag, k0, u0) result(energy)
+      use spectral
+      real(8) :: energy, kmag, k0, u0
+      energy = 16.0*sqrt(2.0/PI)*u0**2/k0*(kmag/k0)**4*exp(-2.0*(kmag/k0)**2)
+   end function spectrum
 
    subroutine adjust_time(this)
       implicit none
