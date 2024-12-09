@@ -20,6 +20,11 @@ program hw5
    ! Energy spectrum
    real(8), dimension(:), allocatable :: Ek,Ekv
 
+   ! Stats
+   real(8) :: divergence, skewness, kinetic_energy
+   integer :: unit_output
+   character(len=100) :: output_file
+
    ! Defaults
    N = 32                  ! Default grid size
    alias = .true.          ! Default to dealiasing enabled
@@ -57,7 +62,7 @@ program hw5
       state%t=0.0
       state%dt=0.001
       state%step=0
-      state%stepf= 50 !99999999
+      state%stepf= 99999999
    end block init_timer
 
    k0=5.0d0
@@ -84,17 +89,30 @@ program hw5
    ! Transform the initial condition
    call state%transform_vel(mesh, FORWARD)
 
+   output_file = 'output.txt'
+   
+   
    ! Advance Fourier coeffs
    do while(.not.(state%sdone.or.state%tdone))
       call state%advance(mesh)
       call state%adjust_time()
-      if (mod(state%step,10).eq.1) then
+      ! Inside the loop
+      if (mod(state%step,10) .eq. 1) then
          call compute_radial_spectrum(state%U, mesh, Ek, Ekv)
+         call compute_stats(state, mesh, divergence, skewness)
          call state%transform_vel(mesh, BACKWARD)
+         call compute_tke(state, mesh, kinetic_energy)
          call output(state, mesh)
          call state%transform_vel(mesh, FORWARD)
+         ! Open file
+         open(newunit=unit_output, file=output_file, status='unknown', action='write', position='append')
+         ! Write to the file
+         write(unit_output, '(I10, 3F15.6)') state%step, divergence, skewness, kinetic_energy
+         ! Close file
+         close(unit_output)
       end if
    end do
+
 
    ! Transform the initial condition
    call state%transform_vel(mesh, BACKWARD)
@@ -103,9 +121,108 @@ program hw5
    call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/V_later.txt")
    call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/W_later.txt")
 
-   deallocate(Ek)
+   deallocate(Ek, Ekv)
 
    contains
+
+   subroutine compute_tke(state, mesh, tke)
+      implicit none
+      type(problem), intent(in) :: state
+      type(grid), intent(in) :: mesh
+      real(8), intent(inout) :: tke 
+      real(8) :: mx,my,mz,vx,vy,vz
+      integer :: i,j,k
+
+      ! Get mean velocity components
+      mx=0.0d0
+      my=0.0d0
+      mz=0.0d0
+      do k=1,mesh%Nz
+         do j=1,mesh%Ny
+            do i=1,mesh%Nx
+               mx = mx + state%U(1,i,j,k)
+               my = my + state%U(2,i,j,k)
+               mz = mz + state%U(3,i,j,k)
+            end do
+         end do
+      end do
+      mx=mx/(mesh%nx*mesh%ny*mesh%nz)
+      my=my/(mesh%nx*mesh%ny*mesh%nz)
+      mz=mz/(mesh%nx*mesh%ny*mesh%nz)
+
+      ! Compute variance
+      vx=0.0d0
+      vy=0.0d0
+      vz=0.0d0
+      do k=1,mesh%Nz
+         do j=1,mesh%Ny
+            do i=1,mesh%Nx
+               vx = vx + (state%U(1,i,j,k) - mx)**2
+               vy = vy + (state%U(2,i,j,k) - my)**2
+               vz = vz + (state%U(3,i,j,k) - mz)**2
+            end do
+         end do
+      end do
+      vx=vx/(mesh%nx*mesh%ny*mesh%nz)
+      vy=vy/(mesh%nx*mesh%ny*mesh%nz)
+      vz=vz/(mesh%nx*mesh%ny*mesh%nz)
+
+      ! Get the tke
+      tke=0.5d0*(vx+vy+vz)
+
+   end subroutine compute_tke
+
+   subroutine compute_stats(state, mesh, meanU, skew)
+      implicit none
+      type(problem), intent(inout) :: state
+      type(grid), intent(in) :: mesh
+      real(8), intent(inout) :: meanU, skew
+      real(8) :: meanU2, meanU3
+      double complex, dimension(:,:,:), allocatable :: tempArr
+      integer :: i, j, k
+
+      ! Compute the terms du_i / dx_i in Fourier space and store in RHS array
+      do k=1,mesh%Nz
+         do j=1,mesh%Ny
+            do i=1,mesh%Nx
+               state%RHS(1,i,j,k) = i_unit*mesh%k1v(i)*state%U(1,i,j,k)
+               state%RHS(2,i,j,k) = i_unit*mesh%k2v(j)*state%U(2,i,j,k)
+               state%RHS(3,i,j,k) = i_unit*mesh%k3v(k)*state%U(3,i,j,k)
+            end do
+         end do
+      end do
+
+      allocate(tempArr, MOLD=state%RHS(1,:,:,:))
+
+      ! Transform du_i / dx_i to physical space
+      do i=1,3
+         tempArr = state%RHS(i,:,:,:)
+         call iFFT_3D(tempArr,tempArr,mesh%nx,mesh%ny,mesh%nz)
+         state%RHS(i,:,:,:) = tempArr
+      end do
+
+      deallocate(tempArr)
+
+      meanU =0.0d0
+      meanU2=0.0d0
+      meanU3=0.0d0
+      do k=1,mesh%Nz
+         do j=1,mesh%Ny
+            do i=1,mesh%Nx
+               meanU = meanU + sum(state%RHS(:,i,j,k))/3
+               meanU2 = meanU2 + sum(state%RHS(:,i,j,k)**2)/3
+               meanU3 = meanU3 + sum(state%RHS(:,i,j,k)**3)/3
+            end do
+         end do
+      end do
+
+      meanU=meanU/(mesh%nx*mesh%ny*mesh%nz)
+      meanU2=meanU2/(mesh%nx*mesh%ny*mesh%nz)
+      meanU3=meanU3/(mesh%nx*mesh%ny*mesh%nz)
+
+      skew=meanU3/meanU2**(1.5d0)
+
+   end subroutine compute_stats
 
    subroutine output(state, mesh)
       implicit none

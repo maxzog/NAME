@@ -55,6 +55,7 @@ module spectral
          real(8) :: kv(3),dk,kmag
          integer :: i,j,k,nbins,ind
 
+         out=0.0d0
          nbins=size(out)
 
          ! Allocate counter 
