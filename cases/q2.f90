@@ -70,6 +70,8 @@ program hw5
 
    call state%initialize_hit(mesh,k0,u0)
 
+   state%U=state%U*PI**(0.25d0)
+
    call write_complex_array_3D(state%U(1,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Uh_ic.txt")
    call write_complex_array_3D(state%U(2,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Vh_ic.txt")
    call write_complex_array_3D(state%U(3,:,:,:), mesh%nx, mesh%ny, mesh%nz, "./outs/Wh_ic.txt")
@@ -89,9 +91,6 @@ program hw5
    ! Transform the initial condition
    call state%transform_vel(mesh, FORWARD)
 
-   output_file = 'output.txt'
-   
-   
    ! Advance Fourier coeffs
    do while(.not.(state%sdone.or.state%tdone))
       call state%advance(mesh)
@@ -104,6 +103,7 @@ program hw5
          call compute_tke(state, mesh, kinetic_energy)
          call output(state, mesh)
          call state%transform_vel(mesh, FORWARD)
+         output_file = 'output.txt'
          ! Open file
          open(newunit=unit_output, file=output_file, status='unknown', action='write', position='append')
          ! Write to the file
